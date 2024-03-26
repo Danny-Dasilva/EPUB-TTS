@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import os
 import pkg_resources
 import re
@@ -6,10 +7,12 @@ import subprocess
 import sys
 import time
 import warnings
+from fam.llm.fast_inference import TTS as TTTS
 
 from bs4 import BeautifulSoup
 import ebooklib
 from ebooklib import epub
+import edge_tts
 from fuzzywuzzy import fuzz
 from mutagen import mp4
 import noisereduce
@@ -22,15 +25,14 @@ import nltk
 from nltk.tokenize import sent_tokenize
 import torch, gc
 import torchaudio
-from metavoice.fam.llm.fast_inference import TTS
-
+from TTS.api import TTS
 from TTS.tts.configs.xtts_config import XttsConfig
 from TTS.tts.models.xtts import Xtts
 from TTS.utils.generic_utils import get_user_data_dir
 from tqdm import tqdm
 import whisper
 
-
+metavoice = TTTS()
 class EpubToAudiobook:
     def __init__(
         self,
@@ -370,6 +372,10 @@ class EpubToAudiobook:
         else:
             print(f"Cover image {cover_img} not found")
 
+    async def edgespeak(self, sentence, speaker, filename):
+        communicate = edge_tts.Communicate(sentence, speaker)
+        await communicate.save(filename)
+
     def extract_title_author(self, text):
         lines = text.split('\n')
         metadata = {}
@@ -404,6 +410,10 @@ class EpubToAudiobook:
         elif engine == "openai":
             if speaker == None:
                 speaker = "onyx"
+            voice_name = "-" + speaker
+        elif engine == "edge":
+            if speaker == None:
+                speaker = "en-US-AndrewNeural"
             voice_name = "-" + speaker
         elif engine == "tts":
             if speaker == None:
@@ -473,6 +483,8 @@ class EpubToAudiobook:
                     print("Continuing...")
                     break
             client = OpenAI(api_key=self.openai)
+        elif engine == "edge":
+            print("Engine is Edge TTS")
         else:
             print(f"Engine is TTS, model is {model_name}")
             self.tts = TTS(model_name).to(self.device)
@@ -530,20 +542,34 @@ class EpubToAudiobook:
                                         input=sentence_groups[x],
                                     )
                                     response.stream_to_file(tempwav)
-                                elif engine == "tts":
-                                    if model_name == "tts_models/en/vctk/vits":
-                                        self.minratio = 0
-                                        # assume we're using a multi-speaker model
-                                        if self.debug:
-                                            print(
-                                                sentence_groups[x]
-                                            )
-                                            with open("debugout.txt", "a") as file: file.write(f"{sentence_groups[x]}\n")
-                                        self.tts.tts_to_file(
-                                            text=sentence_groups[x],
-                                            speaker=speaker,
-                                            file_path=tempwav,
+                                elif engine == "edge":
+                                    self.minratio = 0
+                                    if self.debug:
+                                        print(
+                                            sentence_groups[x]
                                         )
+                                    asyncio.run(self.edgespeak(sentence_groups[x], speaker, tempwav))
+                                elif engine == "tts":
+
+                                    if model_name == "tts_models/en/vctk/vits":
+                                        wav_file = metavoice.synthesise(
+                                        text="This is a demo of text to speech by MetaVoice-1B, an open-source foundational audio model.",
+                                        spk_ref_path="metavoice/assets/bria.mp3" # you can use any speaker reference file (WAV, OGG, MP3, FLAC, etc.)
+                                        )
+                                        breakpoint()
+
+                                        # self.minratio = 0
+                                        # # assume we're using a multi-speaker model
+                                        # if self.debug:
+                                        #     print(
+                                        #         sentence_groups[x]
+                                        #     )
+                                        #     with open("debugout.txt", "a") as file: file.write(f"{sentence_groups[x]}\n")
+                                        # self.tts.tts_to_file(
+                                        #     text=sentence_groups[x],
+                                        #     speaker=speaker,
+                                        #     file_path=tempwav,
+                                        # )
                                     else:
                                         if self.debug:
                                             print(
@@ -572,13 +598,10 @@ class EpubToAudiobook:
                             print(
                                 f"Something is wrong with the audio ({ratio}): {tempwav}"
                             )
-                            # sys.exit()
-                        if engine == "openai":
+                        if engine == "openai" or engine == "edge":
                             temp = AudioSegment.from_mp3(tempwav)
                         else:
                             temp = AudioSegment.from_wav(tempwav)
-                        #temp.export(tempflac, format="flac")
-                        #os.remove(tempwav)
                     tempfiles.append(tempwav)
                 tempwavfiles = [AudioSegment.from_file(f"{f}") for f in tempfiles]
                 concatenated = sum(tempwavfiles)
@@ -676,7 +699,7 @@ def main():
         default="tts",
         nargs="?",
         const="tts",
-        help="Which TTS to use [tts|xtts|openai]",
+        help="Which TTS to use [tts|xtts|openai|edge]",
     )
     parser.add_argument(
         "--xtts",

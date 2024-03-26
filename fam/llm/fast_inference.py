@@ -3,9 +3,11 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
+from typing import Literal, Optional
 
 import librosa
 import torch
+import tyro
 from huggingface_hub import snapshot_download
 
 from fam.llm.adapters import FlattenedInterleavedEncodec2Codebook
@@ -33,10 +35,27 @@ class TTS:
     END_OF_AUDIO_TOKEN = 1024
 
     def __init__(
-        self, model_name: str = "metavoiceio/metavoice-1B-v0.1", *, seed: int = 1337, output_dir: str = "outputs"
+        self,
+        model_name: str = "metavoiceio/metavoice-1B-v0.1",
+        *,
+        seed: int = 1337,
+        output_dir: str = "outputs",
+        quantisation_mode: Optional[Literal["int4", "int8"]] = None,
+        first_stage_path: Optional[str] = None,
     ):
         """
-        model_name (str): refers to the model identifier from the Hugging Face Model Hub (https://huggingface.co/metavoiceio)
+        Initialise the TTS model.
+
+        Args:
+            model_name: refers to the model identifier from the Hugging Face Model Hub (https://huggingface.co/metavoiceio)
+            seed: random seed for reproducibility
+            output_dir: directory to save output files
+            quantisation_mode: quantisation mode for first-stage LLM.
+                Options:
+                - None for no quantisation (bf16 or fp16 based on device),
+                - int4 for int4 weight-only quantisation,
+                - int8 for int8 weight-only quantisation.
+            first_stage_path: path to first-stage LLM checkpoint. If provided, this will override the one grabbed from Hugging Face via `model_name`.
         """
 
         # NOTE: this needs to come first so that we don't change global state when we want to use
@@ -47,6 +66,9 @@ class TTS:
         self.first_stage_adapter = FlattenedInterleavedEncodec2Codebook(end_of_audio_token=self.END_OF_AUDIO_TOKEN)
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
+        if first_stage_path:
+            print(f"Overriding first stage checkpoint via provided model: {first_stage_path}")
+        first_stage_ckpt = first_stage_path or f"{self._model_dir}/first_stage.pt"
 
         second_stage_ckpt_path = f"{self._model_dir}/second_stage.pt"
         config_second_stage = InferenceConfig(
@@ -68,11 +90,12 @@ class TTS:
         self.precision = {"float16": torch.float16, "bfloat16": torch.bfloat16}[self._dtype]
         self.model, self.tokenizer, self.smodel, self.model_size = build_model(
             precision=self.precision,
-            checkpoint_path=Path(f"{self._model_dir}/first_stage.pt"),
+            checkpoint_path=Path(first_stage_ckpt),
             spk_emb_ckpt_path=Path(f"{self._model_dir}/speaker_encoder.pt"),
             device=self._device,
             compile=True,
             compile_prefill=True,
+            quantisation_mode=quantisation_mode,
         )
 
     def synthesise(self, text: str, spk_ref_path: str, top_p=0.95, guidance_scale=3.0, temperature=1.0) -> str:
@@ -140,4 +163,4 @@ class TTS:
 
 
 if __name__ == "__main__":
-    tts = TTS()
+    tts = tyro.cli(TTS)
