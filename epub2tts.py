@@ -7,8 +7,7 @@ import subprocess
 import sys
 import time
 import warnings
-from fam.llm.fast_inference import TTS as TTTS
-
+import re
 from bs4 import BeautifulSoup
 import ebooklib
 from ebooklib import epub
@@ -31,8 +30,10 @@ from TTS.tts.models.xtts import Xtts
 from TTS.utils.generic_utils import get_user_data_dir
 from tqdm import tqdm
 import whisper
+import sys, pathlib
+venv = pathlib.Path("poetry_env.txt").read_text().strip("\n")
+sys.path.append(f"/root/.cache/pypoetry/virtualenvs/{venv}/lib/python3.10/site-packages")
 
-metavoice = TTTS()
 class EpubToAudiobook:
     def __init__(
         self,
@@ -220,12 +221,54 @@ class EpubToAudiobook:
                 text = text.split("Skip Notes")[0].strip()
             if self.skipfootnotes and text.startswith("Footnotes"):
                 continue
+            pattern = r'\b([A-Z])\s([A-Z])'
+
+            text = re.sub(pattern, r'\1\2', text)
+            roman_pattern = r'([IVXLCDM]+)\s*\n'
+
+            text = re.sub(roman_pattern, self.roman_to_words, text)
             print(text[:256])
             self.chapters_to_read.append(text)
         print(f"Number of chapters to read: {len(self.chapters_to_read)}")
         if self.end == 999:
             self.end = len(self.chapters_to_read)
+    def roman_to_words(self, match):
+        numeral = match.group(1)
+        # Convert the Roman numeral to an integer
+        number = self.roman_to_int(numeral)
+        # Convert the integer to words
+        word = self.int_to_words(number)
+        return "Section " + word + "\n"
+    def roman_to_int(self, s):
+        roman_numerals = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+        total = 0
+        prev_value = 0
+        for letter in reversed(s):
+            value = roman_numerals[letter]
+            if value < prev_value:
+                total -= value
+            else:
+                total += value
+            prev_value = value
+        return total
 
+    # Function to convert an integer to its English word representation (for numbers 1-39)
+    def int_to_words(self, num):
+        ones_words = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"]
+        tens_words = ["", "Ten", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+        
+        if num <= 20:
+            words = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
+                    'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen',
+                    'Eighteen', 'Nineteen', 'Twenty']
+            return words[num]
+        elif num < 40:
+            tens = num // 10
+            ones = num % 10
+            word = tens_words[tens]
+            if ones > 0:
+                word += " " + ones_words[ones]
+            return word
     def get_chapters_text(self):
         with open(self.source, "r") as file:
             text = file.read()
@@ -333,9 +376,28 @@ class EpubToAudiobook:
         ) if self.debug else None
         return ratio
 
-    def combine_sentences(self, sentences, length=1000):
+    def combine_sentences(self, sentences):
         for sentence in sentences:
+            # breakpoint()
+            yield from self.process_sentences(sentence)
+
+    def process_sentences(self, sentence):
+        if len(sentence) <= 180:
+            if len(sentence) <=50:
+                if sentence.endswith('.'):
+                    sentence = sentence.rstrip('.')
             yield sentence
+        else:
+            split_char = ',' if ',' in sentence else '\n'
+            split_indices = [i for i, char in enumerate(sentence) if char == split_char]
+            if not split_indices:  # if no split character is found
+                yield sentence
+            else:
+                center = len(sentence) // 2
+                closest_split = min(split_indices, key=lambda index: abs(center - index))
+                parts = [sentence[:closest_split], sentence[closest_split+1:]]
+                for part in parts:
+                    yield from self.process_sentences(part)
 
     def export(self, format):
         allowed_formats = ["txt"]
@@ -502,7 +564,7 @@ class EpubToAudiobook:
                 if self.sayparts and len(self.section_names) == 0:
                     chapter = "Part " + str(partnum + 1) + ". " + self.chapters_to_read[i]
                 elif self.sayparts and len(self.section_names) > 0:
-                    chapter = self.section_names[i].strip() + ".\n" + self.chapters_to_read[i]
+                    chapter = self.section_names[i].strip() + " \n" + self.chapters_to_read[i]
                 else:
                     chapter = self.chapters_to_read[i]
                 sentences = sent_tokenize(chapter)
@@ -513,8 +575,7 @@ class EpubToAudiobook:
                     length = 500
                 else:
                     length = 1000
-                sentence_groups = list(self.combine_sentences(sentences, length))
-
+                sentence_groups = list(self.combine_sentences(sentences))
                 for x in tqdm(range(len(sentence_groups))):
                     #skip if item is empty
                     if len(sentence_groups[x]) == 0:
@@ -550,26 +611,21 @@ class EpubToAudiobook:
                                         )
                                     asyncio.run(self.edgespeak(sentence_groups[x], speaker, tempwav))
                                 elif engine == "tts":
-
                                     if model_name == "tts_models/en/vctk/vits":
-                                        wav_file = metavoice.synthesise(
-                                        text="This is a demo of text to speech by MetaVoice-1B, an open-source foundational audio model.",
-                                        spk_ref_path="metavoice/assets/bria.mp3" # you can use any speaker reference file (WAV, OGG, MP3, FLAC, etc.)
-                                        )
-                                        breakpoint()
+                                     
 
-                                        # self.minratio = 0
-                                        # # assume we're using a multi-speaker model
-                                        # if self.debug:
-                                        #     print(
-                                        #         sentence_groups[x]
-                                        #     )
-                                        #     with open("debugout.txt", "a") as file: file.write(f"{sentence_groups[x]}\n")
-                                        # self.tts.tts_to_file(
-                                        #     text=sentence_groups[x],
-                                        #     speaker=speaker,
-                                        #     file_path=tempwav,
-                                        # )
+                                        self.minratio = 0
+                                        # assume we're using a multi-speaker model
+                                        if self.debug:
+                                            print(
+                                                sentence_groups[x]
+                                            )
+                                            with open("debugout.txt", "a") as file: file.write(f"{sentence_groups[x]}\n")
+                                        self.tts.tts_to_file(
+                                            text=sentence_groups[x],
+                                            speaker=speaker,
+                                            file_path=tempwav,
+                                        )
                                     else:
                                         if self.debug:
                                             print(
@@ -642,10 +698,16 @@ class EpubToAudiobook:
             torch.cuda.empty_cache()
         outputm4a = self.output_filename.replace("m4b", "m4a")
         filelist = "filelist.txt"
+        silent_file = "silent.wav"
+        AudioSegment.silent(duration=4000).export(silent_file, format="wav")
+
+
         with open(filelist, "w") as f:
             for filename in files:
                 filename = filename.replace("'", "'\\''")
                 f.write(f"file '{filename}'\n")
+                f.write(f"file '{silent_file}'\n")  # Add the silent audio file after each audio file
+
         ffmpeg_command = [
             "ffmpeg",
             "-f",

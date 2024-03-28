@@ -98,7 +98,7 @@ class TTS:
             quantisation_mode=quantisation_mode,
         )
 
-    def synthesise(self, text: str, spk_ref_path: str, top_p=0.95, guidance_scale=3.0, temperature=1.0) -> str:
+    def synthesise(self, text: str, spk_ref_path: str, filepath: str, top_p=0.95, guidance_scale=3.0, temperature=1.0) -> str:
         """
         text: Text to speak
         spk_ref_path: Path to speaker reference file. Min. 30s of audio required. Supports both local paths & public URIs. Audio formats: wav, flac & mp3
@@ -149,8 +149,9 @@ class TTS:
         wav_file = wav_files[0]
         with tempfile.NamedTemporaryFile(suffix=".wav") as enhanced_tmp:
             self.enhancer(str(wav_file) + ".wav", enhanced_tmp.name)
-            shutil.copy2(enhanced_tmp.name, str(wav_file) + ".wav")
-            print(f"\nSaved audio to {wav_file}.wav")
+            shutil.copy2(enhanced_tmp.name, filepath)
+            os.remove(str(wav_file) + ".wav")
+            print(f"\nSaved audio to {filepath}")
 
         # calculating real-time factor (RTF)
         time_to_synth_s = time.time() - start
@@ -159,7 +160,7 @@ class TTS:
         print(f"\nTotal time to synth (s): {time_to_synth_s}")
         print(f"Real-time factor: {time_to_synth_s / duration_s:.2f}")
 
-        return str(wav_file) + ".wav"
+        return filepath
 
 
 if __name__ == "__main__":
